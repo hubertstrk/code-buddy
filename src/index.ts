@@ -111,8 +111,8 @@ function parseList(input?: string | string[]): string[] | undefined {
   return input.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-const baselines = new Map();   // abs path -> original baseline content
-const caches = new Map();      // abs path -> ChangeCache
+const baselines = new Map<string, string>();   // abs path -> original baseline content
+const caches = new Map<string, ChangeCache>();      // abs path -> ChangeCache
 const MAX_CHANGES = 3;
 const MAX_DIFF_LINES = 100;    // safety limit
 
@@ -130,8 +130,8 @@ async function onEvent(kind: 'added' | 'changed', relativeFile: string, live: Li
     return;
   }
 
-  const baseline = baselines.get(abs);
-  const cache = caches.get(abs);
+  const baseline = baselines.get(abs)!;
+  const cache = caches.get(abs)!;
 
   // compute diff vs baseline (not vs last content)
   const diff = diffLines(baseline, content);
@@ -141,12 +141,12 @@ async function onEvent(kind: 'added' | 'changed', relativeFile: string, live: Li
       .map(p => p.value.trim())
       .filter(Boolean);
 
-  // detect excessive diff (e.g. refactor or branch switch)
+  // detect excessive diff (e.g., refactor or branch switch)
   const totalLines = added.reduce((sum, a) => sum + a.split("\n").length, 0);
   if (totalLines > MAX_DIFF_LINES) {
     console.log(`[reset] ${relativeFile} diff too large → resetting baseline`);
     baselines.set(abs, content);
-    cache.changes = [];
+    cache.clear();
     return;
   }
 
@@ -159,7 +159,7 @@ async function onEvent(kind: 'added' | 'changed', relativeFile: string, live: Li
   cache.removeDeleted(content);
 
   // nothing new to analyze
-  if (cache.changes.length === 0) return;
+  if (cache.isEmpty()) return;
 
   const context = cache.getContext();
 
@@ -176,8 +176,9 @@ async function existsDir(dir: string): Promise<boolean> {
 }
 
 class LiveCoder {
-  private host: URL;
-  private model: string;
+  private readonly host: URL;
+  private readonly model: string;
+
   constructor(opts: { host: URL; model: string }) {
     this.host = opts.host;
     this.model = opts.model;
@@ -250,8 +251,8 @@ function buildPrompt(filename: string, content: string, ext: string): string {
   const lang = languageFromExt(ext);
   const snippet = content.length > 4000 ? content.slice(0, 4000) + '\n... [truncated]' : content;
   return `You are a sarcastic, cursing, rude and funny coding assistant.
-- Respond as short as possible, **a maximum of 20 words**!!!, and be on point.
-- Start saying whether you like the changes or not (be sarcastic).
+- Respond as short as possible unsing emojis, **a maximum of 20 words**!!!, and be on point.
+- Start saying whether you like the changes or not (be sarcastic, funny and curse).
 - Focus on the quality of the code changes and suggest alternative and improvements.
 - When using code snippets, use short (maximum of 3 lines) and concise snippets with language fences.
 
@@ -264,12 +265,20 @@ function languageFromExt(ext: string): string {
   switch (ext) {
     case '.ts':
       return 'ts';
+    case '.tsx':
+      return 'tsx';
     case '.js':
       return 'js';
+    case '.jsx':
+      return 'jsx';
     case '.json':
       return 'json';
     case '.md':
       return 'md';
+    case '.html':
+      return 'html';
+    case '.vue':
+      return 'vue';
     default:
       return '';
   }
@@ -281,8 +290,8 @@ main().catch((err) => {
 });
 
 class ChangeCache {
-  private maxSize: number;
-  private changes: any[];
+  private readonly maxSize: number;
+  private changes: Array<{ text: string; ts: number }>;
 
   constructor(maxSize = 10) {
     this.maxSize = maxSize;
@@ -300,6 +309,18 @@ class ChangeCache {
 
   removeDeleted(currentContent: string) {
     this.changes = this.changes.filter(c => currentContent.includes(c.text));
+  }
+
+  clear() {
+    this.changes = [];
+  }
+
+  isEmpty() {
+    return this.changes.length === 0;
+  }
+
+  size() {
+    return this.changes.length;
   }
 
   getContext() {
