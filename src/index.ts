@@ -7,6 +7,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { hideBin } from 'yargs/helpers';
 import yargs from 'yargs/yargs';
+import { diffLines } from 'diff';
 
 interface CliArgs {
   watch: string;
@@ -73,7 +74,7 @@ async function main() {
 
   const hostUrl = resolveUrl(argv.host || DEFAULT_HOST);
   const ignoreGlobs = parseList(argv.ignore) ?? ['**/node_modules/**', '**/.git/**', '**/.DS_Store'];
-  const includePattern = argv.pattern ?? '**/*.{ts,tsx,js,jsx,json,md,txt}';
+  const includePattern = argv.pattern ?? '**/*.{ts,html,vue,json,md}';
 
   console.log('[code-buddy] Watching:', watchDir);
   console.log('[code-buddy] Include:', includePattern);
@@ -110,24 +111,59 @@ function parseList(input?: string | string[]): string[] | undefined {
   return input.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+const baselines = new Map();   // abs path -> original baseline content
+const caches = new Map();      // abs path -> ChangeCache
+const MAX_CHANGES = 3;
+const MAX_DIFF_LINES = 100;    // safety limit
+
 async function onEvent(kind: 'added' | 'changed', relativeFile: string, live: LiveCoder, baseDir: string) {
+
   const abs = path.resolve(baseDir, relativeFile);
   const ext = path.extname(abs).toLowerCase();
-  try {
-    const stat = await fs.stat(abs);
-    if (!stat.isFile()) return;
-    const sizeKb = Math.round(stat.size / 1024);
-    if (stat.size > 1024 * 1024 * 2) {
-      console.log(`[skip] ${relativeFile} is too large (${sizeKb} KB)`);
-      return;
-    }
+  const content = await fs.readFile(abs, "utf8");
 
-    const content = await fs.readFile(abs, 'utf8');
-    console.log(`\n[${kind}] ${relativeFile} (${sizeKb} KB)`);
-    await live.summarizeFile(relativeFile, content, ext);
-  } catch (err) {
-    console.error('[file:error]', err);
+  // initialize baseline if not yet stored
+  if (!baselines.has(abs)) {
+    baselines.set(abs, content);
+    caches.set(abs, new ChangeCache(MAX_CHANGES));
+    // console.log(`[init] baseline set for ${relativeFile}`);
+    return;
   }
+
+  const baseline = baselines.get(abs);
+  const cache = caches.get(abs);
+
+  // compute diff vs baseline (not vs last content)
+  const diff = diffLines(baseline, content);
+
+  const added = diff
+      .filter(p => p.added)
+      .map(p => p.value.trim())
+      .filter(Boolean);
+
+  // detect excessive diff (e.g. refactor or branch switch)
+  const totalLines = added.reduce((sum, a) => sum + a.split("\n").length, 0);
+  if (totalLines > MAX_DIFF_LINES) {
+    console.log(`[reset] ${relativeFile} diff too large → resetting baseline`);
+    baselines.set(abs, content);
+    cache.changes = [];
+    return;
+  }
+
+  // update cache with new additions
+  for (const snippet of added) {
+    cache.add(snippet);
+  }
+
+  // remove deleted snippets (that no longer exist)
+  cache.removeDeleted(content);
+
+  // nothing new to analyze
+  if (cache.changes.length === 0) return;
+
+  const context = cache.getContext();
+
+  await live.summarizeFile(relativeFile, context, ext);
 }
 
 async function existsDir(dir: string): Promise<boolean> {
@@ -213,14 +249,13 @@ class LiveCoder {
 function buildPrompt(filename: string, content: string, ext: string): string {
   const lang = languageFromExt(ext);
   const snippet = content.length > 4000 ? content.slice(0, 4000) + '\n... [truncated]' : content;
-  return `You are Code-Buddy, a helpful coding assistant.
-A file was updated in the workspace. Provide a concise analysis:
-- What does the file do?
-- Potential bugs or issues?
-- Suggestions for improvement.
-Keep it short (<= 60 words). If you include code, use ${lang} fences.
+  return `You are a sarcastic, cursing, rude and funny coding assistant.
+- Respond as short as possible, **a maximum of 20 words**!!!, and be on point.
+- Start saying whether you like the changes or not (be sarcastic).
+- Focus on the quality of the code changes and suggest alternative and improvements.
+- When using code snippets, use short (maximum of 3 lines) and concise snippets with language fences.
 
-Filename: ${filename}
+The following code changes were made to the file "${filename}":
 ---
 ${snippet}`;
 }
@@ -244,3 +279,30 @@ main().catch((err) => {
   console.error('[fatal]', err);
   process.exit(1);
 });
+
+class ChangeCache {
+  private maxSize: number;
+  private changes: any[];
+
+  constructor(maxSize = 10) {
+    this.maxSize = maxSize;
+    this.changes = []; // { text, ts }
+  }
+
+  add(snippet: string) {
+    snippet = snippet.trim();
+    if (!snippet) return;
+    // dedupe identical snippets
+    if (this.changes.some(c => c.text === snippet)) return;
+    this.changes.push({ text: snippet, ts: Date.now() });
+    if (this.changes.length > this.maxSize) this.changes.shift();
+  }
+
+  removeDeleted(currentContent: string) {
+    this.changes = this.changes.filter(c => currentContent.includes(c.text));
+  }
+
+  getContext() {
+    return this.changes.map(c => c.text).join("\n\n");
+  }
+}
