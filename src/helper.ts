@@ -25,3 +25,17 @@ export function parseList(input?: string | string[]): string[] | undefined {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+export function computeSimpleDiff(oldText: string, newText: string): string {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const changes: string[] = [];
+
+  newLines.forEach((line, i) => {
+    if (oldLines[i] !== line) {
+      changes.push(`+ ${line}`);
+    }
+  });
+
+  return changes.join("\n");
+}

@@ -43,8 +43,8 @@ export class LiveCoder {
       process.stdout.write("[ollama] ");
       await this.generate({ prompt });
       process.stdout.write("\n");
-    } catch (err: any) {
-      console.error("\n[ollama:error]", err?.message || err);
+    } catch (err: unknown) {
+      console.error("\n[ollama:error]", (err as any)?.message || err);
       console.error(
         "Hint: Ensure Ollama is running locally. Default: http://127.0.0.1:11434"
       );
@@ -116,8 +116,8 @@ export class LiveCoder {
   ) {
     const lang = ext.replace(".", "");
     const snippet =
-      fullContent.length > 10000
-        ? fullContent.slice(0, 10000) + "\n... [truncated]"
+      fullContent.length > 6000
+        ? fullContent.slice(0, 6000) + "\n... [truncated]"
         : fullContent;
 
     return `

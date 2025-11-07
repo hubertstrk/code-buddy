@@ -7,7 +7,12 @@ import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
 
 import { LiveCoder } from "./live-coder.js";
-import { existsDir, resolveUrl, parseList } from "./helper.js";
+import {
+  existsDir,
+  resolveUrl,
+  parseList,
+  computeSimpleDiff,
+} from "./helper.js";
 import { CliArgs } from "./model.js";
 
 import * as simpleGitModule from "simple-git";
@@ -71,18 +76,23 @@ async function main() {
     )
     .parseSync() as unknown as CliArgs;
 
+  // Validate watch directory
   const watchDir = path.resolve(argv.watch);
 
+  // Check if watchDir exists and is a directory
   const exists = await existsDir(watchDir);
   if (!exists) {
     console.error(`Error: Watch folder does not exist: ${watchDir}`);
     process.exit(1);
   }
 
+  // Set git working directory
   gitInstance.cwd(watchDir);
 
+  // Resolve host URL
   const hostUrl = resolveUrl(argv.host || DEFAULT_HOST);
 
+  // Parse ignore globs
   const ignoreGlobs = parseList(argv.ignore) ?? [
     "**/node_modules/**",
     "**/.git/**",
@@ -94,8 +104,6 @@ async function main() {
 
   console.log(`[code-buddy] Watching: ${watchDir} (${includePattern})`);
   console.log("[code-buddy] Ollama:", `${hostUrl.origin} model=${argv.model}`);
-  console.log("[code-buddy] Conciseness:", conciseness);
-  console.log("[code-buddy] Personality:", personality);
 
   const watcher = chokidar.watch(includePattern, {
     cwd: watchDir,
@@ -150,7 +158,6 @@ async function onEvent(
 
   const gitDiff = await gitInstance.diff([relativeFile]);
 
-  console.log(`[analyzing] ${relativeFile}...`);
   await live.summarizeFile(relativeFile, content, gitDiff, localDiff, ext);
 }
 
@@ -161,20 +168,6 @@ async function fileExistsInHEAD(relativeFile: string) {
   } catch {
     return false;
   }
-}
-
-function computeSimpleDiff(oldText: string, newText: string): string {
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
-  const changes: string[] = [];
-
-  newLines.forEach((line, i) => {
-    if (oldLines[i] !== line) {
-      changes.push(`+ ${line}`);
-    }
-  });
-
-  return changes.join("\n");
 }
 
 main().catch((err) => {
